@@ -345,10 +345,12 @@ case "$command" in
     analyze)      cmd_analyze "$@" ;;
     pr)           cmd_pr "$@" ;;
     pr-analyze)   cmd_pr "$@" ;;     # legacy alias
-    stop)         cmd_stop ;;
+    stop)         cmd_stop "$@" ;;
     update)       cmd_update ;;
     *)
-        # Pass unknown commands through to the container
-        "$RUNTIME" run --rm -it "${UNDERSCORE_IMAGE}" "$command" "$@"
+        echo "Error: unknown command '${command}'" >&2
+        echo >&2
+        print_usage >&2
+        exit 2
         ;;
 esac
