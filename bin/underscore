@@ -110,7 +110,7 @@ serve_and_open() {
         fi
         sleep 1
         retries=$((retries + 1))
-        [[ $retries -gt 600 ]] && die "Timed out waiting for visualization server"
+        [[ $retries -gt 1200 ]] && die "Timed out waiting for visualization server (20 min)"
     done
     echo
     echo "  → http://localhost:${UNDERSCORE_PORT}   (Ctrl+C to stop)"
