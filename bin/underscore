@@ -279,18 +279,13 @@ underscore — understand a C# or Java codebase in one command
 
 Usage:
   underscore analyze <github-url-or-path> [options]
-      Analyze a repo (URL or local path). Streams pipeline progress,
-      then serves the visualization at http://localhost:<port> and opens
-      your browser. Ctrl+C tears it down.
+    Analyze a codebase and visualize at http://localhost:<port>. Press Ctrl+C to stop.
 
-  underscore pr <repo-path> [--base <ref>] [--head <ref>] [options]
-      Compare two commits in a repo. Re-runs analysis on the head, diffs
-      against the base, and shows which journeys the change affects.
-      Auto-detects base as merge-base with `main` if --base is omitted.
+  underscore pr <repo-path> [--base <ref>] [--head <ref>]
+    Compare two commits of a repo. Shows affected journeys by serving visualization at http://localhost:<port>. Press Ctrl+C to stop.
 
   underscore stop [--all] [--port N]
-      Stop the underscore visualization container for the given port
-      (default 9000). With --all, stops every underscore container.
+    Stop visualization container (default port 9000). Use --all to stop all.
 
   underscore update
       podman/docker pull the latest image from GHCR.
@@ -305,8 +300,6 @@ Options:
       --base REF             Base ref for `pr` (branch, tag, or SHA)
       --head REF             Head ref for `pr` (default: HEAD)
       --port N               Port for the visualization (default: 9000)
-      --fresh                Start with a clean database
-      --skip-journeys        Skip journey discovery
       --verbose              Verbose output
   -h, --help                 Show help
 
