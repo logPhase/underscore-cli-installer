@@ -93,10 +93,21 @@ is_url() {
 # ---------------------------------------------------------------------------
 
 # Wait for the webapp port to accept connections, then open the browser.
-# Blocks on `wait` so Ctrl+C in the foreground tears down the container.
+# Propagates the container's exit status: if the pipeline errors before
+# the webapp comes up, we exit with its code (not after a long timeout).
 serve_and_open() {
+    local pid="$1"
     local retries=0
     while ! curl -s "http://localhost:${UNDERSCORE_PORT}" >/dev/null 2>&1; do
+        # Container already exited? Fail fast with its status.
+        if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" || {
+                local rc=$?
+                echo "Error: analysis failed (exit ${rc})." >&2
+                exit "$rc"
+            }
+            return 0
+        fi
         sleep 1
         retries=$((retries + 1))
         [[ $retries -gt 600 ]] && die "Timed out waiting for visualization server"
@@ -104,7 +115,7 @@ serve_and_open() {
     echo
     echo "  → http://localhost:${UNDERSCORE_PORT}   (Ctrl+C to stop)"
     open_browser
-    wait
+    wait "$pid"
 }
 
 # Flags that take a value — used by the arg parser in analyze/pr to know
@@ -174,7 +185,7 @@ cmd_analyze() {
         "${docker_args[@]}" \
         "${UNDERSCORE_IMAGE}" \
         analyze "$container_input" "${cli_flags[@]}" --open &
-    serve_and_open
+    serve_and_open "$!"
 }
 
 cmd_pr() {
@@ -236,7 +247,7 @@ cmd_pr() {
         "${docker_args[@]}" \
         "${UNDERSCORE_IMAGE}" \
         pr "$container_input" "${cli_flags[@]}" --open &
-    serve_and_open
+    serve_and_open "$!"
 }
 
 cmd_stop() {
