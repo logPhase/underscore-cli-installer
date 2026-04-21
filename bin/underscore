@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# underscore — thin CLI wrapper
+#
+# Wraps `docker run` so users get a native-feeling CLI experience.
+# Handles volume mounting, port forwarding, and container lifecycle.
+#
+# Usage:
+#   underscore analyze https://github.com/org/repo
+#   underscore analyze ./local-repo
+#   underscore pr ./repo --base main~5
+# ---------------------------------------------------------------------------
+
+UNDERSCORE_VERSION="0.1.0"
+UNDERSCORE_IMAGE="${UNDERSCORE_IMAGE:-ghcr.io/logphase/underscore-cli:latest}"
+UNDERSCORE_PORT="${UNDERSCORE_PORT:-9000}"
+CONTAINER_NAME="underscore-viz"
+
+# Auto-detect container runtime: podman preferred, then docker
+if command -v podman >/dev/null 2>&1; then
+    RUNTIME="podman"
+elif command -v docker >/dev/null 2>&1; then
+    RUNTIME="docker"
+else
+    RUNTIME=""
+fi
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+ensure_docker() {
+    [[ -n "$RUNTIME" ]] || die "Docker or Podman is required but neither is installed.
+  Install Docker: https://docs.docker.com/get-docker/
+  Install Podman: https://podman.io/getting-started/installation"
+    "$RUNTIME" info >/dev/null 2>&1 || die "${RUNTIME} is installed but not running. Start it and try again."
+}
+
+# Stop any running visualization container
+stop_viz() {
+    if "$RUNTIME" ps -q --filter "name=${CONTAINER_NAME}" 2>/dev/null | grep -q .; then
+        "$RUNTIME" stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+        "$RUNTIME" rm "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    fi
+}
+
+open_browser() {
+    local url="http://localhost:${UNDERSCORE_PORT}"
+    case "$(uname -s)" in
+        Darwin)  open "$url" ;;
+        Linux)   xdg-open "$url" 2>/dev/null || echo "  Open $url in your browser" ;;
+        MINGW*|MSYS*|CYGWIN*) start "$url" ;;
+        *)       echo "  Open $url in your browser" ;;
+    esac
+}
+
+# Resolve a local path to an absolute path for Docker volume mounting
+resolve_path() {
+    local input="$1"
+    if [[ -d "$input" ]]; then
+        cd "$input" && pwd
+    elif [[ -f "$input" ]]; then
+        cd "$(dirname "$input")" && echo "$(pwd)/$(basename "$input")"
+    else
+        echo "$input"  # Might be a URL — pass through
+    fi
+}
+
+is_url() {
+    [[ "$1" =~ ^https?:// ]] || [[ "$1" =~ ^git@ ]]
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+# Wait for the webapp port to accept connections, then open the browser.
+# Blocks on `wait` so Ctrl+C in the foreground tears down the container.
+serve_and_open() {
+    local retries=0
+    while ! curl -s "http://localhost:${UNDERSCORE_PORT}" >/dev/null 2>&1; do
+        sleep 1
+        retries=$((retries + 1))
+        [[ $retries -gt 600 ]] && die "Timed out waiting for visualization server"
+    done
+    echo
+    echo "  → http://localhost:${UNDERSCORE_PORT}   (Ctrl+C to stop)"
+    open_browser
+    wait
+}
+
+# Flags that take a value — used by the arg parser in analyze/pr to know
+# when to consume the next token as the flag's argument.
+readonly VALUE_FLAGS_RE='^(--output|-o|--sln|--base|--head|--pr-id|--pr-title|--branch|--baseline-json|--base-sln|--head-sln|--module)$'
+
+cmd_analyze() {
+    local input=""
+    local docker_args=()
+    local cli_flags=()
+
+    # Parse: separate the single positional (repo path/URL) from the flags
+    # that get forwarded to the container CLI.
+    local skip_next=false
+    for arg in "$@"; do
+        if $skip_next; then
+            cli_flags+=("$arg")
+            skip_next=false
+            continue
+        fi
+
+        case "$arg" in
+            --open)
+                # No-op: visualization is always served in the same container
+                # now. Accepted for backward compatibility.
+                ;;
+            *)
+                if [[ "$arg" =~ $VALUE_FLAGS_RE ]]; then
+                    cli_flags+=("$arg")
+                    skip_next=true
+                elif [[ "$arg" == -* ]]; then
+                    cli_flags+=("$arg")
+                elif [[ -z "$input" ]]; then
+                    input="$arg"
+                else
+                    cli_flags+=("$arg")
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$input" ]] && die "Usage: underscore analyze <github-url-or-path> [options]"
+
+    local container_input
+    if is_url "$input"; then
+        container_input="$input"
+    else
+        local abs_path
+        abs_path="$(resolve_path "$input")"
+        [[ -d "$abs_path" ]] || die "Local path not found: $input (resolved to: $abs_path)"
+        # Read-write: the Clojure pipeline writes intermediate NDJSON
+        # (e.g. roslyn-output.ndjson) into the repo directory.
+        docker_args+=(-v "${abs_path}:/repo")
+        container_input="/repo"
+    fi
+
+    stop_viz
+
+    "$RUNTIME" run --rm \
+        --name "${CONTAINER_NAME}" \
+        -p "${UNDERSCORE_PORT}:9000" \
+        "${docker_args[@]}" \
+        "${UNDERSCORE_IMAGE}" \
+        analyze "$container_input" "${cli_flags[@]}" --open &
+    serve_and_open
+}
+
+cmd_pr() {
+    local input=""
+    local docker_args=()
+    local cli_flags=()
+
+    local skip_next=false
+    for arg in "$@"; do
+        if $skip_next; then
+            cli_flags+=("$arg")
+            skip_next=false
+            continue
+        fi
+        case "$arg" in
+            --open) ;;     # always serve now; accept for back-compat
+            *)
+                if [[ "$arg" =~ $VALUE_FLAGS_RE ]]; then
+                    cli_flags+=("$arg")
+                    skip_next=true
+                elif [[ "$arg" == -* ]]; then
+                    cli_flags+=("$arg")
+                elif [[ -z "$input" ]]; then
+                    input="$arg"
+                else
+                    cli_flags+=("$arg")
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$input" ]] && die "Usage: underscore pr <repo-path> [--base <ref>] [--head <ref>]"
+
+    local container_input
+    if is_url "$input"; then
+        container_input="$input"
+    else
+        local abs_path
+        abs_path="$(resolve_path "$input")"
+        [[ -d "$abs_path" ]] || die "Local path not found: $input (resolved to: $abs_path)"
+        # PR analysis needs write access for git operations
+        docker_args+=(-v "${abs_path}:/repo")
+        container_input="/repo"
+    fi
+
+    stop_viz
+
+    "$RUNTIME" run --rm \
+        --name "${CONTAINER_NAME}" \
+        -p "${UNDERSCORE_PORT}:9000" \
+        "${docker_args[@]}" \
+        "${UNDERSCORE_IMAGE}" \
+        pr "$container_input" "${cli_flags[@]}" --open &
+    serve_and_open
+}
+
+cmd_stop() {
+    stop_viz
+    echo "  Stopped."
+}
+
+cmd_update() {
+    echo "  Pulling latest underscore image..."
+    "$RUNTIME" pull "${UNDERSCORE_IMAGE}"
+    echo "  Updated."
+}
+
+print_usage() {
+    cat <<'EOF'
+underscore — understand a C# or Java codebase in one command
+
+Usage:
+  underscore analyze <github-url-or-path> [options]   Analyze and open viz
+  underscore pr <repo-path> [--base <ref>]            PR diff analysis + viz
+  underscore stop                                     Stop running visualization
+  underscore update                                   Pull latest image
+  underscore version
+
+Analysis results are served from the same container that produced them;
+nothing is persisted on the host. Pass -o/--output to keep a copy of the
+JSON on disk.
+
+Options:
+  -o, --output PATH          Output JSON path (host-visible if repo mounted)
+      --sln PATH             Explicit .sln path
+      --skip-journeys        Skip journey discovery
+      --fresh                Start with clean database
+      --verbose              Verbose output
+  -h, --help                 Show help
+
+Environment:
+  UNDERSCORE_IMAGE           Docker image (default: ghcr.io/logphase/underscore-cli:latest)
+  UNDERSCORE_PORT            Webapp port (default: 9000)
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+command="${1:-}"
+shift 2>/dev/null || true
+
+case "$command" in
+    version)            echo "underscore ${UNDERSCORE_VERSION}"; exit 0 ;;
+    --help|-h|help|"")  print_usage; exit 0 ;;
+esac
+
+ensure_docker
+
+case "$command" in
+    analyze)      cmd_analyze "$@" ;;
+    pr)           cmd_pr "$@" ;;
+    pr-analyze)   cmd_pr "$@" ;;     # legacy alias
+    stop)         cmd_stop ;;
+    update)       cmd_update ;;
+    *)
+        # Pass unknown commands through to the container
+        "$RUNTIME" run --rm -it "${UNDERSCORE_IMAGE}" "$command" "$@"
+        ;;
+esac
