@@ -182,9 +182,9 @@ cmd_analyze() {
     "$RUNTIME" run --rm \
         --name "$(container_name)" \
         -p "${UNDERSCORE_PORT}:9000" \
-        "${docker_args[@]}" \
+        ${docker_args[@]+"${docker_args[@]}"} \
         "${UNDERSCORE_IMAGE}" \
-        analyze "$container_input" "${cli_flags[@]}" --open &
+        analyze "$container_input" ${cli_flags[@]+"${cli_flags[@]}"} --open &
     serve_and_open "$!"
 }
 
@@ -244,9 +244,9 @@ cmd_pr() {
     "$RUNTIME" run --rm \
         --name "$(container_name)" \
         -p "${UNDERSCORE_PORT}:9000" \
-        "${docker_args[@]}" \
+        ${docker_args[@]+"${docker_args[@]}"} \
         "${UNDERSCORE_IMAGE}" \
-        pr "$container_input" "${cli_flags[@]}" --open &
+        pr "$container_input" ${cli_flags[@]+"${cli_flags[@]}"} --open &
     serve_and_open "$!"
 }
 
