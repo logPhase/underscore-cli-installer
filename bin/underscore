@@ -99,7 +99,7 @@ run_with_input() {
     local subcommand="$1"; shift
 
     if [[ $# -eq 0 ]] || [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
-        exec "$RUNTIME" run --rm "${UNDERSCORE_IMAGE}" "$subcommand" --help
+        exec "$RUNTIME" run --rm --init "${UNDERSCORE_IMAGE}" "$subcommand" --help
     fi
 
     local input="$1"; shift
@@ -121,7 +121,11 @@ run_with_input() {
 
     stop_viz "$port"
 
-    exec "$RUNTIME" run --rm \
+    # --init runs tini as PID 1 inside the container. After the entrypoint
+    # `exec`s into busybox httpd, busybox becomes PID 1 — and signals from
+    # `docker run` (without -t) don't propagate cleanly to a non-init PID 1,
+    # so Ctrl+C would hang. tini fixes that.
+    exec "$RUNTIME" run --rm --init \
         --name "$(container_name "$port")" \
         -p "${port}:${port}" \
         ${docker_args[@]+"${docker_args[@]}"} \
