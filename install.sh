@@ -12,7 +12,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 INSTALL_DIR="${HOME}/.underscore/bin"
-UNDERSCORE_IMAGE="${UNDERSCORE_IMAGE:-ghcr.io/logphase/underscore-cli:latest}"
+# The image tag is derived from the wrapper after it is downloaded so the
+# wrapper's `UNDERSCORE_VERSION` is the single source of truth. Users can
+# still override the full image reference (e.g. for local testing).
+UNDERSCORE_IMAGE_OVERRIDE="${UNDERSCORE_IMAGE:-}"
 # The wrapper lives in the PUBLIC installer repo (the main underscore-cli
 # repo is private). Overridable for local testing, e.g.:
 #   UNDERSCORE_WRAPPER_URL="file://$PWD/bin/underscore" ./install.sh
@@ -63,10 +66,25 @@ fi
 chmod +x "${INSTALL_DIR}/underscore"
 
 # ---------------------------------------------------------------------------
+# Resolve image tag from the wrapper we just downloaded
+# ---------------------------------------------------------------------------
+
+if [[ -n "$UNDERSCORE_IMAGE_OVERRIDE" ]]; then
+    UNDERSCORE_IMAGE="$UNDERSCORE_IMAGE_OVERRIDE"
+else
+    WRAPPER_VERSION=$(grep -E '^UNDERSCORE_VERSION=' "${INSTALL_DIR}/underscore" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+    if [[ -z "$WRAPPER_VERSION" ]]; then
+        rm -f "${INSTALL_DIR}/underscore"
+        error "Could not read UNDERSCORE_VERSION from the downloaded wrapper."
+    fi
+    UNDERSCORE_IMAGE="ghcr.io/logphase/underscore-cli:${WRAPPER_VERSION}"
+fi
+
+# ---------------------------------------------------------------------------
 # Pull container image
 # ---------------------------------------------------------------------------
 
-info "Pulling underscore container image (this may take a few minutes)..."
+info "Pulling underscore container image ${UNDERSCORE_IMAGE} (this may take a few minutes)..."
 if ! "$RUNTIME" pull "${UNDERSCORE_IMAGE}"; then
     rm -f "${INSTALL_DIR}/underscore"
     error "Failed to pull ${UNDERSCORE_IMAGE}.

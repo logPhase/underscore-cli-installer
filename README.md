@@ -15,8 +15,10 @@ The installer:
 1. Checks that `podman` or `docker` is installed and running.
 2. Downloads the `underscore` wrapper to `~/.underscore/bin/underscore`.
 3. Adds that directory to your `PATH` (`.zshrc` or `.bashrc`).
-4. Pulls the container image `ghcr.io/logphase/underscore-cli:latest`
-   (~1.5 GB, one-time).
+4. Pulls the container image `ghcr.io/logphase/underscore-cli:<wrapper version>`
+   (~1.5 GB, one-time). The installer reads the version out of the wrapper
+   it just downloaded — wrapper and image are pinned together and cannot
+   drift.
 
 Then:
 
@@ -38,15 +40,19 @@ underscore pr ./path/to/repo --base main
 
 ```bash
 rm -rf ~/.underscore
-podman rmi ghcr.io/logphase/underscore-cli:latest    # or: docker rmi
+podman rmi $(podman images -q ghcr.io/logphase/underscore-cli)    # or: docker rmi
 ```
 
 ## About this repo
 
-This is a thin, **auto-generated** distribution repo containing only
-`install.sh` and the `underscore` wrapper. Both are synced from the main
-(private) [logphase/underscore-cli](https://github.com/logphase/underscore-cli)
-repo on every push. Do not edit files here directly — changes will be
-overwritten by the next sync.
+This is the public distribution repo for the `underscore` wrapper. It
+contains only `install.sh` and `bin/underscore` — the actual analyzer
+source lives in the private [logphase/underscore-cli](https://github.com/logphase/underscore-cli)
+repo and ships as a container image on GHCR.
 
-For source, issues, and documentation, request access to the main repo.
+The wrapper here is the canonical source — edit `bin/underscore` and
+`install.sh` directly. The wrapper's `UNDERSCORE_VERSION` constant pins
+the image tag the installer will pull, so bumping the wrapper version
+and publishing a matching image is the release flow.
+
+For issues and documentation, request access to the main repo.

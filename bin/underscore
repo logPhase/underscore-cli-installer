@@ -4,23 +4,26 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # underscore — thin CLI wrapper
 #
-# Wraps `docker run` so users get a native-feeling CLI experience.
-# Handles volume mounting, port forwarding, and container lifecycle.
+# Host-side glue around `docker run`. The wrapper owns the operations that
+# can't move into the container:
 #
-# Usage:
-#   underscore analyze https://github.com/org/repo
-#   underscore analyze ./local-repo
-#   underscore pr ./repo --base main~5
+#   • Volume mount     — `-v <path>:/repo` when the input is a local path.
+#   • Port publish     — `-p <port>:<port>`, peeked from --port in the args.
+#   • Container name   — so `underscore stop` can find and remove a container.
+#   • Lifecycle verbs  — stop, update (re-run installer), version (wrapper).
+#
+# Per-subcommand flag semantics live in the image. The wrapper never owns
+# `--port`; it observes the value for `-p` and forwards the flag verbatim.
+# Top-level `--help` is wrapper-owned (instant, doesn't require a running
+# runtime); `underscore <subcommand> --help` is forwarded to the image.
 # ---------------------------------------------------------------------------
 
-UNDERSCORE_VERSION="0.1.0"
-UNDERSCORE_IMAGE="${UNDERSCORE_IMAGE:-ghcr.io/logphase/underscore-cli:latest}"
-UNDERSCORE_PORT="${UNDERSCORE_PORT:-9000}"
-# Container name is derived from port so concurrent analyses on different
-# ports get distinct containers and don't stop each other.
-container_name() { echo "underscore-viz-${UNDERSCORE_PORT}"; }
+UNDERSCORE_VERSION="0.1.3"
+UNDERSCORE_IMAGE="${UNDERSCORE_IMAGE:-ghcr.io/logphase/underscore-cli:${UNDERSCORE_VERSION}}"
+UNDERSCORE_INSTALLER_URL="${UNDERSCORE_INSTALLER_URL:-https://raw.githubusercontent.com/logphase/underscore-cli-installer/main/install.sh}"
 
-# Auto-detect container runtime: podman preferred, then docker
+DEFAULT_PORT=9000
+
 if command -v podman >/dev/null 2>&1; then
     RUNTIME="podman"
 elif command -v docker >/dev/null 2>&1; then
@@ -28,10 +31,6 @@ elif command -v docker >/dev/null 2>&1; then
 else
     RUNTIME=""
 fi
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 die() { echo "Error: $*" >&2; exit 1; }
 
@@ -42,16 +41,16 @@ ensure_docker() {
     "$RUNTIME" info >/dev/null 2>&1 || die "${RUNTIME} is installed but not running. Start it and try again."
 }
 
-# Stop the visualization container for the current port.
+container_name() { echo "underscore-viz-$1"; }
+
 stop_viz() {
-    local name; name="$(container_name)"
+    local name; name="$(container_name "$1")"
     if "$RUNTIME" ps -q --filter "name=${name}" 2>/dev/null | grep -q .; then
         "$RUNTIME" stop "${name}" >/dev/null 2>&1 || true
         "$RUNTIME" rm "${name}" >/dev/null 2>&1 || true
     fi
 }
 
-# Stop every underscore visualization container on the host.
 stop_all_viz() {
     local ids
     ids=$("$RUNTIME" ps -q --filter "name=underscore-viz-" 2>/dev/null || true)
@@ -62,17 +61,6 @@ stop_all_viz() {
     "$RUNTIME" rm   $ids >/dev/null 2>&1 || true
 }
 
-open_browser() {
-    local url="http://localhost:${UNDERSCORE_PORT}"
-    case "$(uname -s)" in
-        Darwin)  open "$url" ;;
-        Linux)   xdg-open "$url" 2>/dev/null || echo "  Open $url in your browser" ;;
-        MINGW*|MSYS*|CYGWIN*) start "$url" ;;
-        *)       echo "  Open $url in your browser" ;;
-    esac
-}
-
-# Resolve a local path to an absolute path for Docker volume mounting
 resolve_path() {
     local input="$1"
     if [[ -d "$input" ]]; then
@@ -80,7 +68,7 @@ resolve_path() {
     elif [[ -f "$input" ]]; then
         cd "$(dirname "$input")" && echo "$(pwd)/$(basename "$input")"
     else
-        echo "$input"  # Might be a URL — pass through
+        echo "$input"
     fi
 }
 
@@ -88,252 +76,138 @@ is_url() {
     [[ "$1" =~ ^https?:// ]] || [[ "$1" =~ ^git@ ]]
 }
 
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
-
-# Wait for the webapp port to accept connections, then open the browser.
-# Propagates the container's exit status: if the pipeline errors before
-# the webapp comes up, we exit with its code (not after a long timeout).
-serve_and_open() {
-    local pid="$1"
-    local retries=0
-    while ! curl -s "http://localhost:${UNDERSCORE_PORT}" >/dev/null 2>&1; do
-        # Container already exited? Fail fast with its status.
-        if ! kill -0 "$pid" 2>/dev/null; then
-            wait "$pid" || {
-                local rc=$?
-                echo "Error: analysis failed (exit ${rc})." >&2
-                exit "$rc"
-            }
-            return 0
-        fi
-        sleep 1
-        retries=$((retries + 1))
-        [[ $retries -gt 1200 ]] && die "Timed out waiting for visualization server (20 min)"
-    done
-    echo
-    echo "  → http://localhost:${UNDERSCORE_PORT}   (Ctrl+C to stop)"
-    open_browser
-    wait "$pid"
-}
-
-# Flags that take a value — used by the arg parser in analyze/pr to know
-# when to consume the next token as the flag's argument.
-readonly VALUE_FLAGS_RE='^(--output|-o|--sln|--base|--head|--pr-id|--pr-title|--branch|--baseline-json|--base-sln|--head-sln|--module)$'
-
-cmd_analyze() {
-    local input=""
-    local docker_args=()
-    local cli_flags=()
-
-    # Parse: separate the single positional (repo path/URL), the wrapper's
-    # own --port flag, and the flags that get forwarded to the container CLI.
-    local skip_next=false
+# Peek at --port in the args without consuming it. The container also sees
+# the flag and is the source of truth for its meaning; we just need the
+# value for the host:container port mapping.
+extract_port() {
+    local port="$DEFAULT_PORT"
     local next_is_port=false
     for arg in "$@"; do
-        if $next_is_port; then
-            UNDERSCORE_PORT="$arg"
-            next_is_port=false
-            continue
-        fi
-        if $skip_next; then
-            cli_flags+=("$arg")
-            skip_next=false
-            continue
-        fi
-
+        if $next_is_port; then port="$arg"; next_is_port=false; continue; fi
         case "$arg" in
-            --open) ;;                # always implicit now
-            --port) next_is_port=true ;;
-            --port=*) UNDERSCORE_PORT="${arg#--port=}" ;;
-            *)
-                if [[ "$arg" =~ $VALUE_FLAGS_RE ]]; then
-                    cli_flags+=("$arg")
-                    skip_next=true
-                elif [[ "$arg" == -* ]]; then
-                    cli_flags+=("$arg")
-                elif [[ -z "$input" ]]; then
-                    input="$arg"
-                else
-                    cli_flags+=("$arg")
-                fi
-                ;;
+            --port=*) port="${arg#--port=}" ;;
+            --port)   next_is_port=true ;;
         esac
     done
+    echo "$port"
+}
 
-    [[ -z "$input" ]] && die "Usage: underscore analyze <github-url-or-path> [options]"
+# Volume mount + port publish + opaque forward. The first positional must
+# be the input (URL or path); everything else is passed to the container
+# untouched, including --port.
+run_with_input() {
+    local subcommand="$1"; shift
 
+    if [[ $# -eq 0 ]] || [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
+        exec "$RUNTIME" run --rm "${UNDERSCORE_IMAGE}" "$subcommand" --help
+    fi
+
+    local input="$1"; shift
+    local port; port=$(extract_port "$@")
+
+    local docker_args=()
     local container_input
+
     if is_url "$input"; then
         container_input="$input"
     else
         local abs_path
         abs_path="$(resolve_path "$input")"
-        [[ -d "$abs_path" ]] || die "Local path not found: $input (resolved to: $abs_path)"
-        # Read-write: the Clojure pipeline writes intermediate NDJSON
-        # (e.g. roslyn-output.ndjson) into the repo directory.
+        [[ -d "$abs_path" ]] || die "Local path not found: $input (resolved to: $abs_path)
+  Tip: the input must be the first argument, before any flags."
         docker_args+=(-v "${abs_path}:/repo")
         container_input="/repo"
     fi
 
-    stop_viz
+    stop_viz "$port"
 
-    "$RUNTIME" run --rm \
-        --name "$(container_name)" \
-        -p "${UNDERSCORE_PORT}:9000" \
+    exec "$RUNTIME" run --rm \
+        --name "$(container_name "$port")" \
+        -p "${port}:${port}" \
         ${docker_args[@]+"${docker_args[@]}"} \
         "${UNDERSCORE_IMAGE}" \
-        analyze "$container_input" ${cli_flags[@]+"${cli_flags[@]}"} --open &
-    serve_and_open "$!"
+        "$subcommand" "$container_input" "$@"
 }
 
-cmd_pr() {
-    local input=""
-    local docker_args=()
-    local cli_flags=()
-
-    local skip_next=false
-    local next_is_port=false
-    for arg in "$@"; do
-        if $next_is_port; then
-            UNDERSCORE_PORT="$arg"
-            next_is_port=false
-            continue
-        fi
-        if $skip_next; then
-            cli_flags+=("$arg")
-            skip_next=false
-            continue
-        fi
-        case "$arg" in
-            --open) ;;                # always implicit now
-            --port) next_is_port=true ;;
-            --port=*) UNDERSCORE_PORT="${arg#--port=}" ;;
-            *)
-                if [[ "$arg" =~ $VALUE_FLAGS_RE ]]; then
-                    cli_flags+=("$arg")
-                    skip_next=true
-                elif [[ "$arg" == -* ]]; then
-                    cli_flags+=("$arg")
-                elif [[ -z "$input" ]]; then
-                    input="$arg"
-                else
-                    cli_flags+=("$arg")
-                fi
-                ;;
-        esac
-    done
-
-    [[ -z "$input" ]] && die "Usage: underscore pr <repo-path> [--base <ref>] [--head <ref>]"
-
-    local container_input
-    if is_url "$input"; then
-        container_input="$input"
-    else
-        local abs_path
-        abs_path="$(resolve_path "$input")"
-        [[ -d "$abs_path" ]] || die "Local path not found: $input (resolved to: $abs_path)"
-        # PR analysis needs write access for git operations
-        docker_args+=(-v "${abs_path}:/repo")
-        container_input="/repo"
-    fi
-
-    stop_viz
-
-    "$RUNTIME" run --rm \
-        --name "$(container_name)" \
-        -p "${UNDERSCORE_PORT}:9000" \
-        ${docker_args[@]+"${docker_args[@]}"} \
-        "${UNDERSCORE_IMAGE}" \
-        pr "$container_input" ${cli_flags[@]+"${cli_flags[@]}"} --open &
-    serve_and_open "$!"
-}
-
+# `stop` is wrapper-only — it manipulates host containers, not the image —
+# so it owns its own --port flag without duplicating image behavior.
 cmd_stop() {
     local stop_all=false
+    local port="$DEFAULT_PORT"
+    local next_is_port=false
     for arg in "$@"; do
+        if $next_is_port; then port="$arg"; next_is_port=false; continue; fi
         case "$arg" in
-            --all) stop_all=true ;;
-            --port) ;;                      # handled below
-            --port=*) UNDERSCORE_PORT="${arg#--port=}" ;;
+            --all)    stop_all=true ;;
+            --port=*) port="${arg#--port=}" ;;
+            --port)   next_is_port=true ;;
         esac
-    done
-    # `--port N` form
-    local i=1
-    while [[ $i -le $# ]]; do
-        if [[ "${!i}" == "--port" ]]; then
-            local j=$((i+1))
-            UNDERSCORE_PORT="${!j}"
-        fi
-        i=$((i+1))
     done
 
     if $stop_all; then
         stop_all_viz
         echo "  Stopped all underscore visualization containers."
     else
-        stop_viz
-        echo "  Stopped port ${UNDERSCORE_PORT}."
+        stop_viz "$port"
+        echo "  Stopped port ${port}."
     fi
 }
 
-cmd_update() {
-    echo "  Pulling latest underscore image..."
-    "$RUNTIME" pull "${UNDERSCORE_IMAGE}"
-    echo "  Updated."
-}
-
 print_usage() {
-    cat <<'EOF'
+    cat <<EOF
 underscore — understand a C# or Java codebase in one command
 
 Usage:
-  underscore analyze <github-url-or-path> [options]
-    Analyze a codebase and visualize at http://localhost:<port>. Press Ctrl+C to stop.
+  underscore analyze <repo-url-or-path>     Analyze a codebase and open the
+                                            visualization in your browser.
 
-  underscore pr <repo-path> [--base <ref>] [--head <ref>]
-    Compare two commits of a repo. Shows affected journeys by serving visualization at http://localhost:<port>. Press Ctrl+C to stop.
+  underscore pr <repo-path>                 Compare two commits and highlight
+                                            which journeys the change touches.
 
-  underscore stop [--all] [--port N]
-    Stop visualization container (default port 9000). Use --all to stop all.
+  underscore stop [--all]                   Stop the running visualization.
+                                            --all stops every underscore
+                                            container on the host.
 
-  underscore update
-      podman/docker pull the latest image from GHCR.
+  underscore update                         Update underscore to the latest
+                                            version.
 
-  underscore version
-      Print the wrapper version.
+  underscore version                        Show the installed version.
 
-Options:
-  -o, --output PATH          Save the analysis JSON to PATH
-      --sln PATH             Explicit .sln/.slnx (when a repo has multiple)
-      --module NAME          Module for multi-module Java projects
-      --base REF             Base ref for `pr` (branch, tag, or SHA)
-      --head REF             Head ref for `pr` (default: HEAD)
-      --port N               Port for the visualization (default: 9000)
-      --verbose              Verbose output
-  -h, --help                 Show help
+Examples:
+  underscore analyze https://github.com/dotnet/aspnetcore
+  underscore analyze ./my-project
+  underscore pr ./my-repo --base main
+  underscore analyze ./my-project --port 9001
 
-Concurrent runs:
-  Each port gets its own container, so you can run multiple analyses
-  simultaneously by passing a different --port to each:
+Run multiple analyses at the same time by giving each a different port:
+  underscore analyze ./repo-a --port 9000
+  underscore analyze ./repo-b --port 9001
 
-      underscore analyze ./repo-a --port 9000
-      underscore analyze ./repo-b --port 9001
-
-Environment:
-  UNDERSCORE_IMAGE           Container image (default: ghcr.io/logphase/underscore-cli:latest)
-  UNDERSCORE_PORT            Default port — overridden by --port (default: 9000)
+For the full list of options on analyze or pr:
+  underscore analyze --help
+  underscore pr --help
 EOF
 }
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+cmd_update() {
+    # The wrapper pins ${UNDERSCORE_IMAGE} to its own version, so a plain
+    # `podman pull` would not move the user forward. Re-running the installer
+    # fetches a newer wrapper, which in turn pins (and pulls) the matching
+    # newer image — wrapper and image upgrade together.
+    echo "  Re-running installer to upgrade underscore..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "${UNDERSCORE_INSTALLER_URL}" | bash
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "${UNDERSCORE_INSTALLER_URL}" | bash
+    else
+        die "curl or wget is required to update"
+    fi
+}
 
 command="${1:-}"
 shift 2>/dev/null || true
 
+# Wrapper-owned commands that don't need the runtime running.
 case "$command" in
     version)            echo "underscore ${UNDERSCORE_VERSION}"; exit 0 ;;
     --help|-h|help|"")  print_usage; exit 0 ;;
@@ -342,11 +216,10 @@ esac
 ensure_docker
 
 case "$command" in
-    analyze)      cmd_analyze "$@" ;;
-    pr)           cmd_pr "$@" ;;
-    pr-analyze)   cmd_pr "$@" ;;     # legacy alias
-    stop)         cmd_stop "$@" ;;
-    update)       cmd_update ;;
+    analyze|pr)  run_with_input "$command" "$@" ;;
+    pr-analyze)  run_with_input pr "$@" ;;          # legacy alias
+    stop)        cmd_stop "$@" ;;
+    update)      cmd_update ;;
     *)
         echo "Error: unknown command '${command}'" >&2
         echo >&2
