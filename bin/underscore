@@ -121,10 +121,11 @@ run_with_input() {
 
     stop_viz "$port"
 
-    # --init runs tini as PID 1 inside the container. After the entrypoint
-    # `exec`s into busybox httpd, busybox becomes PID 1 — and signals from
-    # `docker run` (without -t) don't propagate cleanly to a non-init PID 1,
-    # so Ctrl+C would hang. tini fixes that.
+    # --init runs tini as PID 1 inside the container — reaps zombies and
+    # forwards signals to the entrypoint cleanly. Ctrl+C handling lives
+    # in the entrypoint: docker --sig-proxy delivers Ctrl+C as SIGINT,
+    # which busybox httpd ignores in -f mode, so bash traps INT and
+    # forwards as SIGTERM (which httpd does honor).
     exec "$RUNTIME" run --rm --init \
         --name "$(container_name "$port")" \
         -p "${port}:${port}" \
