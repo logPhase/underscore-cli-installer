@@ -16,10 +16,46 @@ INSTALL_DIR="${HOME}/.underscore/bin"
 # wrapper's `UNDERSCORE_VERSION` is the single source of truth. Users can
 # still override the full image reference (e.g. for local testing).
 UNDERSCORE_IMAGE_OVERRIDE="${UNDERSCORE_IMAGE:-}"
+
+# ---------------------------------------------------------------------------
+# Args: --version pins to a specific release tag of this repo.
+# ---------------------------------------------------------------------------
+VERSION=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --version)    VERSION="$2"; shift 2 ;;
+        --version=*)  VERSION="${1#--version=}"; shift ;;
+        -h|--help)
+            cat <<EOF
+Usage: install.sh [--version X.Y.Z]
+
+  --version X.Y.Z    Install a specific underscore-cli version
+                     (default: latest from the main branch)
+  -h, --help         Show this help
+EOF
+            exit 0
+            ;;
+        *) echo "Error: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [[ -n "$VERSION" ]] && ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: --version must be X.Y.Z (got: $VERSION)" >&2
+    exit 2
+fi
+
 # The wrapper lives in the PUBLIC installer repo (the main underscore-cli
-# repo is private). Overridable for local testing, e.g.:
-#   UNDERSCORE_WRAPPER_URL="file://$PWD/bin/underscore" ./install.sh
-WRAPPER_URL="${UNDERSCORE_WRAPPER_URL:-https://raw.githubusercontent.com/logphase/underscore-cli-installer/main/bin/underscore}"
+# repo is private). Resolution order:
+#   1. UNDERSCORE_WRAPPER_URL  — explicit override (e.g. file:// for local testing)
+#   2. --version X.Y.Z         — fetch from the matching git tag
+#   3. default                 — main branch
+if [[ -n "${UNDERSCORE_WRAPPER_URL:-}" ]]; then
+    WRAPPER_URL="$UNDERSCORE_WRAPPER_URL"
+elif [[ -n "$VERSION" ]]; then
+    WRAPPER_URL="https://raw.githubusercontent.com/logphase/underscore-cli-installer/v${VERSION}/bin/underscore"
+else
+    WRAPPER_URL="https://raw.githubusercontent.com/logphase/underscore-cli-installer/main/bin/underscore"
+fi
 
 BOLD="\033[1m"
 GREEN="\033[32m"
@@ -52,13 +88,27 @@ info "Using container runtime: ${RUNTIME}"
 # Install CLI wrapper
 # ---------------------------------------------------------------------------
 
-info "Installing underscore CLI to ${INSTALL_DIR}..."
+if [[ -n "$VERSION" ]]; then
+    info "Installing underscore CLI v${VERSION} to ${INSTALL_DIR}..."
+else
+    info "Installing underscore CLI (latest) to ${INSTALL_DIR}..."
+fi
 mkdir -p "${INSTALL_DIR}"
 
+fetch_failed() {
+    rm -f "${INSTALL_DIR}/underscore"
+    if [[ -n "$VERSION" ]]; then
+        error "Could not download wrapper for v${VERSION}.
+  Verify the version exists: https://github.com/logphase/underscore-cli-installer/releases"
+    else
+        error "Could not download wrapper from ${WRAPPER_URL}"
+    fi
+}
+
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${WRAPPER_URL}" -o "${INSTALL_DIR}/underscore"
+    curl -fsSL "${WRAPPER_URL}" -o "${INSTALL_DIR}/underscore" || fetch_failed
 elif command -v wget >/dev/null 2>&1; then
-    wget -qO "${INSTALL_DIR}/underscore" "${WRAPPER_URL}"
+    wget -qO "${INSTALL_DIR}/underscore" "${WRAPPER_URL}" || fetch_failed
 else
     error "curl or wget is required"
 fi
