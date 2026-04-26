@@ -18,7 +18,7 @@ set -euo pipefail
 # runtime); `underscore <subcommand> --help` is forwarded to the image.
 # ---------------------------------------------------------------------------
 
-UNDERSCORE_VERSION="0.1.3"
+UNDERSCORE_VERSION="0.1.4"
 UNDERSCORE_IMAGE="${UNDERSCORE_IMAGE:-ghcr.io/logphase/underscore-cli:${UNDERSCORE_VERSION}}"
 UNDERSCORE_INSTALLER_URL="${UNDERSCORE_INSTALLER_URL:-https://raw.githubusercontent.com/logphase/underscore-cli-installer/main/install.sh}"
 
