@@ -1,0 +1,28 @@
+name: validate-tag
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify UNDERSCORE_VERSION matches the tag
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+          declared=$(grep -E '^UNDERSCORE_VERSION=' bin/underscore | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          if [[ -z "$declared" ]]; then
+            echo "::error::could not read UNDERSCORE_VERSION from bin/underscore"
+            exit 1
+          fi
+          if [[ "$declared" != "$version" ]]; then
+            echo "::error::bin/underscore declares UNDERSCORE_VERSION=\"$declared\" but tag is \"$version\""
+            exit 1
+          fi
+          echo "OK: tag $tag matches bin/underscore UNDERSCORE_VERSION=$declared"
