@@ -49,6 +49,27 @@ underscore pr ./path/to/repo --base main
   - Memory ≥ 8 GB, CPUs ≥ 4 (Docker Desktop / OrbStack / colima / `podman machine`).
   - OrbStack recommended for the fastest file-mount performance.
 
+## Persistent state
+
+`~/.underscore/` on the host is bind-mounted into the container, so the
+following persist across `docker run --rm`:
+
+- `~/.underscore/dotnet/` — .NET runtime + lazy-installed target SDKs
+  (~700 MB; seeded once on first run, then incrementally extended)
+- `~/.underscore/datomic/<project>/` — per-project analysis databases
+  (so re-analyzing the same repo is incremental, not a clean slate)
+- `~/.underscore/runs/<project>/<ts>/` — output JSONs (last 5 per project)
+- `~/.underscore/www/` — webapp data the static server reads
+
+The same layout is used by the Homebrew install, so a host with both
+shares the SDK cache.
+
+**Linux note:** on native Docker without user-namespace remapping,
+container processes run as root and files appear root-owned on the host.
+Cleanup (`underscore clean`, `rm -rf ~/.underscore`) then needs `sudo`.
+Docker Desktop (macOS/Windows), OrbStack, colima, and rootless Podman all
+handle this transparently.
+
 ## Uninstall
 
 ```bash

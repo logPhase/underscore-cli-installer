@@ -108,6 +108,13 @@ run_with_input() {
     local docker_args=()
     local container_input
 
+    # Persist the .NET SDK cache, Datomic DB, and run artifacts on the host
+    # by bind-mounting ~/.underscore. Same cache layout as the Homebrew CLI,
+    # so an install of both shares the SDK cache. On Linux without
+    # userns-remap, files end up root-owned on the host — see README.
+    mkdir -p "${HOME}/.underscore"
+    docker_args+=(-v "${HOME}/.underscore:/root/.underscore")
+
     if is_url "$input"; then
         container_input="$input"
     else
