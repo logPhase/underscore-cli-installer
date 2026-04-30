@@ -128,27 +128,35 @@ run_with_input() {
 
     stop_viz "$port"
 
-    # Allocate a pseudo-TTY only when stdin/stdout are real terminals.
-    # Required on WSL/rootless podman for SIGINT (Ctrl+C) to proxy from
-    # the host shell into the container; harmless on macOS/Docker Desktop.
-    # Skipped in non-interactive contexts (CI logs, piped output) where
-    # a TTY would cause podman to error or emit color escapes.
+    # Allocate a pseudo-TTY when stdin/stdout are real terminals so the
+    # container's output renders cleanly (color, line buffering). Skipped
+    # in non-interactive contexts (CI, piped output) where a TTY would
+    # break.
     local tty_args=()
     if [[ -t 0 && -t 1 ]]; then
         tty_args+=(-t)
     fi
 
-    # --init runs tini as PID 1 inside the container — reaps zombies and
-    # forwards signals to the entrypoint. The entrypoint exec's into
-    # static-web-server (Rust binary, honors SIGINT/SIGTERM directly),
-    # so no extra signal-handling shim is needed.
-    exec "$RUNTIME" run --rm --init \
-        --name "$(container_name "$port")" \
+    # Don't `exec` into podman/docker. Run it as a child so bash retains
+    # control of SIGINT (Ctrl+C). The signal-proxy chain
+    # (terminal → podman → tini → entrypoint → static-web-server) is
+    # unreliable on WSL/rootless podman; catching Ctrl+C in bash and
+    # explicitly `podman stop`ing the named container is robust to every
+    # such failure mode.
+    local cname; cname="$(container_name "$port")"
+    cleanup_run() { "$RUNTIME" stop "$cname" >/dev/null 2>&1 || true; }
+    trap cleanup_run INT TERM HUP
+
+    "$RUNTIME" run --rm --init \
+        --name "$cname" \
         -p "${port}:${port}" \
         ${tty_args[@]+"${tty_args[@]}"} \
         ${docker_args[@]+"${docker_args[@]}"} \
         "${UNDERSCORE_IMAGE}" \
         "$subcommand" "$container_input" "$@"
+    local rc=$?
+    trap - INT TERM HUP
+    return "$rc"
 }
 
 # `stop` is wrapper-only — it manipulates host containers, not the image —
