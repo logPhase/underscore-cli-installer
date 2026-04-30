@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/logphase/underscore-cli-installer/m
 A specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/logphase/underscore-cli-installer/main/install.sh | bash -s -- --version 0.1.5
+curl -fsSL https://raw.githubusercontent.com/logphase/underscore-cli-installer/main/install.sh | bash -s -- --version 0.2.1
 ```
 
 When `--version X.Y.Z` is given, the installer fetches `bin/underscore`
