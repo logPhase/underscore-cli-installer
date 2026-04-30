@@ -128,14 +128,24 @@ run_with_input() {
 
     stop_viz "$port"
 
+    # Allocate a pseudo-TTY only when stdin/stdout are real terminals.
+    # Required on WSL/rootless podman for SIGINT (Ctrl+C) to proxy from
+    # the host shell into the container; harmless on macOS/Docker Desktop.
+    # Skipped in non-interactive contexts (CI logs, piped output) where
+    # a TTY would cause podman to error or emit color escapes.
+    local tty_args=()
+    if [[ -t 0 && -t 1 ]]; then
+        tty_args+=(-t)
+    fi
+
     # --init runs tini as PID 1 inside the container — reaps zombies and
-    # forwards signals to the entrypoint cleanly. Ctrl+C handling lives
-    # in the entrypoint: docker --sig-proxy delivers Ctrl+C as SIGINT,
-    # which busybox httpd ignores in -f mode, so bash traps INT and
-    # forwards as SIGTERM (which httpd does honor).
+    # forwards signals to the entrypoint. The entrypoint exec's into
+    # static-web-server (Rust binary, honors SIGINT/SIGTERM directly),
+    # so no extra signal-handling shim is needed.
     exec "$RUNTIME" run --rm --init \
         --name "$(container_name "$port")" \
         -p "${port}:${port}" \
+        ${tty_args[@]+"${tty_args[@]}"} \
         ${docker_args[@]+"${docker_args[@]}"} \
         "${UNDERSCORE_IMAGE}" \
         "$subcommand" "$container_input" "$@"
