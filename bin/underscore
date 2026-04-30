@@ -137,15 +137,13 @@ run_with_input() {
         tty_args+=(-t)
     fi
 
-    # Don't `exec` into podman/docker. Run it as a child so bash retains
-    # control of SIGINT (Ctrl+C). The signal-proxy chain
-    # (terminal → podman → tini → entrypoint → static-web-server) is
-    # unreliable on WSL/rootless podman; catching Ctrl+C in bash and
-    # explicitly `podman stop`ing the named container is robust to every
-    # such failure mode.
+    # Background podman so bash is suspended in `wait` (which IS
+    # interruptible by signals), then trap Ctrl+C and explicitly
+    # `podman stop` the named container. With foreground `exec` or
+    # foreground run, bash can't fire the trap until podman returns —
+    # which it never does until the container exits, so Ctrl+C wedges.
     local cname; cname="$(container_name "$port")"
-    cleanup_run() { "$RUNTIME" stop "$cname" >/dev/null 2>&1 || true; }
-    trap cleanup_run INT TERM HUP
+    local run_pid
 
     "$RUNTIME" run --rm --init \
         --name "$cname" \
@@ -153,7 +151,13 @@ run_with_input() {
         ${tty_args[@]+"${tty_args[@]}"} \
         ${docker_args[@]+"${docker_args[@]}"} \
         "${UNDERSCORE_IMAGE}" \
-        "$subcommand" "$container_input" "$@"
+        "$subcommand" "$container_input" "$@" &
+    run_pid=$!
+
+    cleanup_run() { "$RUNTIME" stop "$cname" >/dev/null 2>&1 || true; }
+    trap cleanup_run INT TERM HUP
+
+    wait "$run_pid"
     local rc=$?
     trap - INT TERM HUP
     return "$rc"
