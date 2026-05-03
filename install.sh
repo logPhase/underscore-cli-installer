@@ -95,8 +95,16 @@ else
 fi
 mkdir -p "${INSTALL_DIR}"
 
+# Download to a temp file and `mv` into place so the swap is atomic. Critical
+# for `underscore update`: that subcommand runs the installer from inside the
+# wrapper bash is still reading. Writing in-place (curl -o final) keeps the
+# same inode and corrupts bash's mid-script read; mv gives the new wrapper a
+# new inode and leaves the running bash on its original (now-unlinked) one.
+TMP_WRAPPER="${INSTALL_DIR}/.underscore.download.$$"
+cleanup_tmp() { rm -f "${TMP_WRAPPER}"; }
+trap cleanup_tmp EXIT
+
 fetch_failed() {
-    rm -f "${INSTALL_DIR}/underscore"
     if [[ -n "$VERSION" ]]; then
         error "Could not download wrapper for v${VERSION}.
   Verify the version exists: https://github.com/logphase/underscore-cli-installer/releases"
@@ -106,14 +114,15 @@ fetch_failed() {
 }
 
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${WRAPPER_URL}" -o "${INSTALL_DIR}/underscore" || fetch_failed
+    curl -fsSL "${WRAPPER_URL}" -o "${TMP_WRAPPER}" || fetch_failed
 elif command -v wget >/dev/null 2>&1; then
-    wget -qO "${INSTALL_DIR}/underscore" "${WRAPPER_URL}" || fetch_failed
+    wget -qO "${TMP_WRAPPER}" "${WRAPPER_URL}" || fetch_failed
 else
     error "curl or wget is required"
 fi
 
-chmod +x "${INSTALL_DIR}/underscore"
+chmod +x "${TMP_WRAPPER}"
+mv "${TMP_WRAPPER}" "${INSTALL_DIR}/underscore"
 
 # ---------------------------------------------------------------------------
 # Resolve image tag from the wrapper we just downloaded

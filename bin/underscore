@@ -18,7 +18,7 @@ set -euo pipefail
 # runtime); `underscore <subcommand> --help` is forwarded to the image.
 # ---------------------------------------------------------------------------
 
-UNDERSCORE_VERSION="0.3.2"
+UNDERSCORE_VERSION="0.4.0"
 UNDERSCORE_IMAGE="${UNDERSCORE_IMAGE:-ghcr.io/logphase/underscore-cli:${UNDERSCORE_VERSION}}"
 UNDERSCORE_INSTALLER_URL="${UNDERSCORE_INSTALLER_URL:-https://raw.githubusercontent.com/logphase/underscore-cli-installer/main/install.sh}"
 
@@ -248,6 +248,10 @@ cmd_update() {
     else
         die "curl or wget is required to update"
     fi
+    # The installer just replaced this script. Exit immediately so bash
+    # doesn't seek-resume reading the wrapper file — reading more bytes
+    # after an in-place rewrite produces garbled syntax.
+    exit 0
 }
 
 command="${1:-}"
