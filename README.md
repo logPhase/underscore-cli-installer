@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/logphase/underscore-cli-installer/m
 A specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/logphase/underscore-cli-installer/main/install.sh | bash -s -- --version 0.5.0
+curl -fsSL https://raw.githubusercontent.com/logphase/underscore-cli-installer/main/install.sh | bash -s -- --version 0.6.0
 ```
 
 The installer drops `~/.underscore/bin/underscore`, adds it to your
