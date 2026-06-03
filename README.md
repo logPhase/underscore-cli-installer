@@ -1,7 +1,7 @@
 # underscore-cli installer
 
 Public installer for [underscore](https://github.com/logphase/underscore-cli) —
-a CLI that analyzes C# and Java codebases and produces a spatial
+a CLI that analyzes C#, Java, and Python codebases and produces a spatial
 visualization you can explore in the browser.
 
 ## Install

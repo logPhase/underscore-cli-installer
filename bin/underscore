@@ -193,7 +193,7 @@ cmd_stop() {
 
 print_usage() {
     cat <<EOF
-underscore — understand a C# or Java codebase in one command
+underscore — understand a C#, Java, or Python codebase in one command
 
 Commands:
   analyze <repo-url-or-path>   Analyze a codebase and open the visualization.
