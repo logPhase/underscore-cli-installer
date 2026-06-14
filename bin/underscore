@@ -193,7 +193,7 @@ cmd_stop() {
 
 print_usage() {
     cat <<EOF
-underscore — understand a C#, Java, or Python codebase in one command
+underscore — understand a C#, Java, Python, or TypeScript codebase in one command
 
 Commands:
   analyze <repo-url-or-path>   Analyze a codebase and open the visualization.
@@ -209,11 +209,14 @@ Examples:
   underscore analyze https://github.com/dotnet/aspnetcore
   underscore pr https://github.com/dotnet/eShop/pull/972
 
-Per-subcommand flags (--base, --head, --sln, --module, --lang, --source-root,
---port, etc.) live in the image — see \`underscore analyze --help\` and
-\`underscore pr --help\`. Use --lang java|csharp to force language detection
-on repos with mixed JVM languages, and --source-root <path> (repeatable) for
-projects whose layout is not Maven src/main/java.
+Language (C#, Java, Python, TypeScript) is auto-detected. A repo with more
+than one analyzable unit (a monorepo, or multiple languages) prints a table
+of units and asks you to pick one with --unit <id> (e.g. --unit typescript:backend);
+a single-unit repo is analyzed automatically.
+
+Per-subcommand flags (--unit, --base, --head, --port, --include-generated,
+--include-migrations, etc.) live in the image — see \`underscore analyze --help\`
+and \`underscore pr --help\`.
 
 Environment (auto-forwarded into the container if set on the host):
   GITHUB_TOKEN     PAT for private GitHub repos and rate-limit relief.
